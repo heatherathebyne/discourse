@@ -677,7 +677,8 @@ class ImportScripts::VBulletin < ImportScripts::Base
       AND n1.contenttypeid=#{@channel_typeid};
     SQL
     subcats.each do |sc|
-      category_id = CategoryCustomField.where(name: 'import_id').where(value: sc['nodeid']).first.category_id
+      category_id = CategoryCustomField.where(name: 'import_id').where(value: sc['nodeid']).first&.category_id
+      next unless category_id
       Permalink.create(url: "#{URL_PREFIX}#{sc['p1']}/#{sc['p2']}", category_id: category_id) rescue nil
     end
   end
@@ -715,7 +716,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
   end
 
   def parse_timestamp(timestamp)
-    Time.zone.at(@tz.utc_to_local(timestamp))
+    Time.zone.at(@tz.utc_to_local(Time.at(timestamp)))
   end
 
   def mysql_query(sql)
