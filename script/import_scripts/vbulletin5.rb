@@ -573,9 +573,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
     end
 
     # remove attachments
-    raw = raw.gsub(/\[attach[^\]]*\]\d+\[\/attach\]/i, "")
-    # why is case insensitivity not working?
-    raw = raw.gsub(/\[ATTACH[^\]]*\]\d+\[\/ATTACH\]/i, "")
+    raw = raw.gsub(/\[attach.*?\[\/attach\]/i, "")
 
     # [THREAD]<thread_id>[/THREAD]
     # ==> http://my.discourse.org/t/slug/<topic_id>
