@@ -320,7 +320,16 @@ class ImportScripts::VBulletin < ImportScripts::Base
       create_posts(posts, total: post_count, offset: offset) do |post|
         raw = preprocess_post_raw(post["raw"])
         next if raw.blank?
-        next unless topic = topic_lookup_from_imported_post_id("thread-#{post["threadid"]}")
+
+        unless topic = topic_lookup_from_imported_post_id("thread-#{post["threadid"]}")
+          # This might be a post comment -- a child node of a post (which is a child node of a topic)
+          # In this case, we have a different import_id format to check.
+          # This will result in post comments being added to topics as additional posts,
+          # inlined by timestamp.
+          # They are correctly linked as replies to their parent post.
+          next unless topic = topic_lookup_from_imported_post_id(post["threadid"])
+        end
+
         p = {
           id: post["postid"],
           user_id: user_id_from_imported_user_id(post["userid"]) || Discourse::SYSTEM_USER_ID,
@@ -565,6 +574,8 @@ class ImportScripts::VBulletin < ImportScripts::Base
 
     # remove attachments
     raw = raw.gsub(/\[attach[^\]]*\]\d+\[\/attach\]/i, "")
+    # why is case insensitivity not working?
+    raw = raw.gsub(/\[ATTACH[^\]]*\]\d+\[\/ATTACH\]/i, "")
 
     # [THREAD]<thread_id>[/THREAD]
     # ==> http://my.discourse.org/t/slug/<topic_id>
