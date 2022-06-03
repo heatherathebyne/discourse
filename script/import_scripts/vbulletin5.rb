@@ -19,6 +19,11 @@ class ImportScripts::VBulletin < ImportScripts::Base
   DB_USER ||= ENV['DB_USER'] || "username"
   ATTACH_DIR ||= ENV['ATTACH_DIR'] || "/home/discourse/vbulletin/attach"
   AVATAR_DIR ||= ENV['AVATAR_DIR'] || "/home/discourse/vbulletin/avatars"
+  # if you have other categories outside of the forums, such as social groups,
+  # provide a comma-delimited list of those root node ids here
+  # they will be imported in the same way as the forums are
+  # example: EXTRA_ROOT_NODES=5 or EXTRA_ROOT_NODES=5,47
+  EXTRA_ROOT_NODES ||= ENV['EXTRA_ROOT_NODES'] || ""
 
   def initialize
     super
@@ -185,16 +190,21 @@ class ImportScripts::VBulletin < ImportScripts::Base
   def import_categories
     puts "", "importing top level categories..."
 
+    extra_root_node_ids = EXTRA_ROOT_NODES.split(',').map(&:to_i)
+    all_root_node_ids = [ROOT_NODE, extra_root_node_ids].flatten
+    extra_root_node_ids_string = extra_root_node_ids.join(',')
+    all_root_node_ids_string = all_root_node_ids.join(',')
+
     categories = mysql_query("SELECT nodeid AS forumid, title, description, displayorder, parentid
-	      FROM #{DB_PREFIX}node
-          WHERE parentid=#{ROOT_NODE}
+        FROM #{DB_PREFIX}node
+          WHERE parentid IN (#{all_root_node_ids_string})
         UNION
           SELECT nodeid, title, description, displayorder, parentid
           FROM #{DB_PREFIX}node
           WHERE contenttypeid = #{@channel_typeid}
-            AND parentid IN (SELECT nodeid FROM #{DB_PREFIX}node WHERE parentid=#{ROOT_NODE})").to_a
+            AND parentid IN (SELECT nodeid FROM #{DB_PREFIX}node WHERE parentid IN (#{all_root_node_ids_string}))").to_a
 
-    top_level_categories = categories.select { |c| c["parentid"] == ROOT_NODE }
+    top_level_categories = categories.select { |c| all_root_node_ids.include?(c["parentid"]) }
 
     create_categories(top_level_categories) do |category|
       {
@@ -207,7 +217,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
 
     puts "", "importing child categories..."
 
-    children_categories = categories.select { |c| c["parentid"] != ROOT_NODE }
+    children_categories = categories.select { |c| !all_root_node_ids.include? c["parentid"] }
     top_level_category_ids = Set.new(top_level_categories.map { |c| c["forumid"] })
 
     # cut down the tree to only 2 levels of categories
