@@ -44,6 +44,10 @@ class ImportScripts::VBulletin < ImportScripts::Base
     @forum_typeid = mysql_query("SELECT contenttypeid FROM #{DB_PREFIX}contenttype WHERE class='Forum'").first['contenttypeid']
     @channel_typeid = mysql_query("SELECT contenttypeid FROM #{DB_PREFIX}contenttype WHERE class='Channel'").first['contenttypeid']
     @text_typeid = mysql_query("SELECT contenttypeid FROM #{DB_PREFIX}contenttype WHERE class='Text'").first['contenttypeid']
+    # gallery posts are often side by side with text posts in topics
+    @gallery_typeid = mysql_query("SELECT contenttypeid FROM #{DB_PREFIX}contenttype WHERE class='Gallery'").first['contenttypeid']
+    @post_typeids = [@text_typeid, @gallery_typeid]
+    @post_typeids_string = @post_typeids.join(',')
   end
 
   def execute
@@ -249,7 +253,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
         WHERE (unpublishdate = 0 OR unpublishdate IS NULL)
         AND (approved = 1 AND showapproved = 1)
         AND parentid IN (
-        SELECT nodeid FROM #{DB_PREFIX}node WHERE contenttypeid=#{@channel_typeid} ) AND contenttypeid=#{@text_typeid};"
+        SELECT nodeid FROM #{DB_PREFIX}node WHERE contenttypeid=#{@channel_typeid} ) AND contenttypeid IN (#{@post_typeids_string});"
     ).first["cnt"]
 
     batches(BATCH_SIZE) do |offset|
@@ -261,7 +265,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
         LEFT JOIN #{DB_PREFIX}nodeview nv ON nv.nodeid=t.nodeid
         LEFT JOIN #{DB_PREFIX}text txt ON txt.nodeid=t.nodeid
         WHERE t.parentid in ( select nodeid from #{DB_PREFIX}node where contenttypeid=#{@channel_typeid} )
-          AND t.contenttypeid = #{@text_typeid}
+          AND t.contenttypeid IN (#{@post_typeids_string})
           AND (t.unpublishdate = 0 OR t.unpublishdate IS NULL)
           AND t.approved = 1 AND t.showapproved = 1
         ORDER BY t.nodeid
@@ -305,7 +309,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
     end
 
     post_count = mysql_query("SELECT COUNT(nodeid) cnt FROM #{DB_PREFIX}node WHERE parentid NOT IN (
-        SELECT nodeid FROM #{DB_PREFIX}node WHERE contenttypeid=#{@channel_typeid} ) AND contenttypeid=#{@text_typeid};").first["cnt"]
+        SELECT nodeid FROM #{DB_PREFIX}node WHERE contenttypeid=#{@channel_typeid} ) AND contenttypeid IN (#{@post_typeids_string});").first["cnt"]
 
     batches(BATCH_SIZE) do |offset|
       posts = mysql_query <<-SQL
@@ -316,7 +320,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
         LEFT JOIN #{DB_PREFIX}nodeview nv ON nv.nodeid=p.nodeid
         LEFT JOIN #{DB_PREFIX}text txt ON txt.nodeid=p.nodeid
         WHERE p.parentid NOT IN ( select nodeid from #{DB_PREFIX}node where contenttypeid=#{@channel_typeid} )
-          AND p.contenttypeid = #{@text_typeid}
+          AND p.contenttypeid IN (#{@post_typeids_string})
         ORDER BY postid
            LIMIT #{BATCH_SIZE}
           OFFSET #{offset}
@@ -362,11 +366,18 @@ class ImportScripts::VBulletin < ImportScripts::Base
     ext = mysql_query("SELECT GROUP_CONCAT(DISTINCT(extension)) exts FROM #{DB_PREFIX}filedata").first['exts'].split(',')
     SiteSetting.authorized_extensions = (SiteSetting.authorized_extensions.split("|") + ext).uniq.join("|")
 
+    # This query pulls in both attachments and photo gallery items
+    # Note that gallery items may not work right if filesystem storage is used;
+    # we have to make up a filename for gallery items.
     uploads = mysql_query <<-SQL
     SELECT n.parentid nodeid, a.filename, fd.userid, LENGTH(fd.filedata) AS dbsize, filedata, fd.filedataid
       FROM #{DB_PREFIX}attach a
       LEFT JOIN #{DB_PREFIX}filedata fd ON fd.filedataid = a.filedataid
       LEFT JOIN #{DB_PREFIX}node n on n.nodeid = a.nodeid
+      UNION SELECT np.parentid nodeid, CONCAT(fdp.filehash, fdp.extension) AS filename, fdp.userid, LENGTH(fdp.filedata) AS dbsize, filedata, fdp.filedataid
+        FROM #{DB_PREFIX}photo p
+        LEFT JOIN #{DB_PREFIX}filedata fdp on fdp.filedataid = p.filedataid
+        LEFT JOIN #{DB_PREFIX}node np on np.nodeid = p.nodeid
     SQL
 
     current_count = 0
@@ -643,7 +654,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
         WHERE (unpublishdate = 0 OR unpublishdate IS NULL)
         AND (approved = 1 AND showapproved = 1)
         AND parentid IN (
-        SELECT nodeid FROM #{DB_PREFIX}node WHERE contenttypeid=#{@channel_typeid} ) AND contenttypeid=#{@text_typeid};"
+        SELECT nodeid FROM #{DB_PREFIX}node WHERE contenttypeid=#{@channel_typeid} ) AND contenttypeid IN (#{@post_typeids_string});"
     ).first["cnt"]
 
     batches(BATCH_SIZE) do |offset|
@@ -653,7 +664,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
         LEFT JOIN #{DB_PREFIX}node t ON t.parentid = f.nodeid
         LEFT JOIN #{DB_PREFIX}node p ON p.nodeid = f.parentid
         WHERE f.contenttypeid = #{@channel_typeid}
-          AND t.contenttypeid = #{@text_typeid}
+          AND t.contenttypeid IN (#{@post_typeids_string})
           AND t.approved = 1 AND t.showapproved = 1
           AND (t.unpublishdate = 0 OR t.unpublishdate IS NULL)
         ORDER BY t.nodeid
