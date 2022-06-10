@@ -19,11 +19,18 @@ class ImportScripts::VBulletin < ImportScripts::Base
   DB_USER ||= ENV['DB_USER'] || "username"
   ATTACH_DIR ||= ENV['ATTACH_DIR'] || "/home/discourse/vbulletin/attach"
   AVATAR_DIR ||= ENV['AVATAR_DIR'] || "/home/discourse/vbulletin/avatars"
-  # if you have other categories outside of the forums, such as social groups,
-  # provide a comma-delimited list of those root node ids here
-  # they will be imported in the same way as the forums are
+  # Nodes specified here will be imported the same way as the main forums;
+  # that is, their child category (channel) nodes will be imported as top level categories,
+  # and grandchild nodes will be imported as subcategories.
+  # Provide a comma-delimited list.
   # example: EXTRA_ROOT_NODES=5 or EXTRA_ROOT_NODES=5,47
   EXTRA_ROOT_NODES ||= ENV['EXTRA_ROOT_NODES'] || ""
+  # Channel nodes specified here will be imported directly as categories,
+  # and child channel nodes as subcategories.
+  # This is useful if you don't want to import all of the parent node's children.
+  # Also takes a comma-delimited list:
+  # EXTRA_CAT_NODES=4 or EXTRA_CAT_NODES=4,23
+  EXTRA_CAT_NODES ||= ENV['EXTRA_CAT_NODES'] || ""
 
   def initialize
     super
@@ -199,16 +206,20 @@ class ImportScripts::VBulletin < ImportScripts::Base
     extra_root_node_ids_string = extra_root_node_ids.join(',')
     all_root_node_ids_string = all_root_node_ids.join(',')
 
+    extra_cat_node_ids = EXTRA_CAT_NODES.split(',').map(&:to_i)
+    extra_cat_node_ids_string = extra_cat_node_ids.join(',')
+
     categories = mysql_query("SELECT nodeid AS forumid, title, description, displayorder, parentid
         FROM #{DB_PREFIX}node
           WHERE parentid IN (#{all_root_node_ids_string})
+          OR nodeid IN (#{extra_cat_node_ids_string})
         UNION
           SELECT nodeid, title, description, displayorder, parentid
           FROM #{DB_PREFIX}node
           WHERE contenttypeid = #{@channel_typeid}
-            AND parentid IN (SELECT nodeid FROM #{DB_PREFIX}node WHERE parentid IN (#{all_root_node_ids_string}))").to_a
+            AND parentid IN (SELECT nodeid FROM #{DB_PREFIX}node WHERE parentid IN (#{all_root_node_ids_string}) OR nodeid IN (#{extra_cat_node_ids_string}))").to_a
 
-    top_level_categories = categories.select { |c| all_root_node_ids.include?(c["parentid"]) }
+    top_level_categories = categories.select { |c| all_root_node_ids.include?(c["parentid"]) || extra_cat_node_ids.include?(c['forumid']) }
 
     create_categories(top_level_categories) do |category|
       {
@@ -221,13 +232,13 @@ class ImportScripts::VBulletin < ImportScripts::Base
 
     puts "", "importing child categories..."
 
-    children_categories = categories.select { |c| !all_root_node_ids.include? c["parentid"] }
     top_level_category_ids = Set.new(top_level_categories.map { |c| c["forumid"] })
+    children_categories = categories.select { |c| !all_root_node_ids.include?(c["parentid"]) && !extra_cat_node_ids.include?(c['forumid']) && !top_level_category_ids.include?(c['forumid'])}
 
     # cut down the tree to only 2 levels of categories
     children_categories.each do |cc|
-      while !top_level_category_ids.include?(cc["parentid"])
-        cc["parentid"] = categories.detect { |c| c["forumid"] == cc["parentid"] }["parentid"]
+      while !top_level_category_ids.include?(cc["parentid"]) && !extra_cat_node_ids.include?(cc['parentid'])
+        cc["parentid"] = categories.detect(-> { raise "no top_level_category_id found for nodeid #{cc['forumid']}" }) { |c| c["forumid"] == cc["parentid"] }["parentid"]
       end
     end
 
