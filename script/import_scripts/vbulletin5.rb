@@ -94,7 +94,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
 
     batches(BATCH_SIZE) do |offset|
       users = mysql_query <<-SQL
-          SELECT u.userid, u.username, u.homepage, u.usertitle, u.usergroupid, u.joindate, u.email,
+          SELECT u.userid, u.username, u.homepage, u.usertitle, u.usergroupid, u.membergroupids, u.joindate, u.email,
             CASE WHEN u.scheme='blowfish:10' THEN token
                  WHEN u.scheme='legacy' THEN REPLACE(token, ' ', ':')
             END AS password,
@@ -128,6 +128,11 @@ class ImportScripts::VBulletin < ImportScripts::Base
             @old_username_to_new_usernames[user["username"]] = u.username
             import_profile_picture(user, u)
             # import_profile_background(user, u)
+
+            Group.find(group_id_from_imported_group_id(user['usergroupid'])).add(u)
+            user['membergroupids'].split(',').each do |id|
+              Group.find(group_id_from_imported_group_id(id)).add(u)
+            end
           end
         }
       end
@@ -168,7 +173,7 @@ class ImportScripts::VBulletin < ImportScripts::Base
     imported_user.update(uploaded_avatar_id: upload.id)
   ensure
     file.close rescue nil
-    file.unlind rescue nil
+    file.unlink rescue nil
   end
 
   def import_profile_background(old_user, imported_user)
