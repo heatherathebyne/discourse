@@ -7,6 +7,7 @@ require 'htmlentities'
 class ImportScripts::VBulletin < ImportScripts::Base
   BATCH_SIZE = 1000
   ROOT_NODE = 2
+  BANNED_USERS_GROUP = 8
   TIMEZONE = "America/Los_Angeles"
 
   # override these using environment vars
@@ -94,13 +95,14 @@ class ImportScripts::VBulletin < ImportScripts::Base
 
     batches(BATCH_SIZE) do |offset|
       users = mysql_query <<-SQL
-          SELECT u.userid, u.username, u.homepage, u.usertitle, u.usergroupid, u.membergroupids, u.joindate, u.email,
+          SELECT u.userid, u.username, u.homepage, u.usertitle, u.usergroupid, u.membergroupids, u.joindate, u.email, ub.bandate, ub.liftdate, ub.reason,
             CASE WHEN u.scheme='blowfish:10' THEN token
                  WHEN u.scheme='legacy' THEN REPLACE(token, ' ', ':')
             END AS password,
             IF(ug.title = 'Administrators', 1, 0) AS admin
             FROM #{DB_PREFIX}user u
             LEFT JOIN #{DB_PREFIX}usergroup ug ON ug.usergroupid = u.usergroupid
+            LEFT JOIN #{DB_PREFIX}userban ub ON ub.userid = u.userid
         ORDER BY userid
            LIMIT #{BATCH_SIZE}
           OFFSET #{offset}
@@ -129,9 +131,16 @@ class ImportScripts::VBulletin < ImportScripts::Base
             import_profile_picture(user, u)
             # import_profile_background(user, u)
 
-            Group.find(group_id_from_imported_group_id(user['usergroupid'])).add(u)
-            user['membergroupids'].split(',').each do |id|
-              Group.find(group_id_from_imported_group_id(id)).add(u)
+            all_user_groups = [user['usergroupid'], user['membergroupids'].split(',')].flatten
+
+            all_user_groups.each { |id| Group.find(group_id_from_imported_group_id(id)).add(u) }
+
+            # suspend users in the Banned Users group
+            if all_user_groups.include?(BANNED_USERS_GROUP)
+              suspended_at = (user['bandate'] && user['bandate'] != 0) ? Time.at(user['bandate']) : Time.current
+              suspended_till = (user['liftdate'] && user['liftdate'] != 0) ? Time.at(user['liftdate']) : Time.current + 1000.years
+
+              u.update(suspended_at: suspended_at, suspended_till: suspended_till)
             end
           end
         }
