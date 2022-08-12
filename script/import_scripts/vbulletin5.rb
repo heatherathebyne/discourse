@@ -6,6 +6,7 @@ require 'htmlentities'
 
 class ImportScripts::VBulletin < ImportScripts::Base
   BATCH_SIZE = 1000
+  ATTACHMENT_BATCH_SIZE = 50 # chonky queries
   ROOT_NODE = 2
   BANNED_USERS_GROUP = 8
   TIMEZONE = "America/Los_Angeles"
@@ -391,11 +392,14 @@ class ImportScripts::VBulletin < ImportScripts::Base
     ext = mysql_query("SELECT GROUP_CONCAT(DISTINCT(extension)) exts FROM #{DB_PREFIX}filedata").first['exts'].split(',')
     SiteSetting.authorized_extensions = (SiteSetting.authorized_extensions.split("|") + ext).uniq.join("|")
 
-    # This query pulls in both attachments and photo gallery items
-    # Note that gallery items may not work right if filesystem storage is used;
-    # we have to make up a filename for gallery items.
-    uploads = mysql_query <<-SQL
-    SELECT n.parentid nodeid, a.filename, fd.userid, LENGTH(fd.filedata) AS dbsize, filedata, fd.filedataid
+    upload_count = mysql_query("SELECT COUNT(nodeid) count FROM #{DB_PREFIX}attach").first['count']
+
+    batches(ATTACHMENT_BATCH_SIZE) do |offset|
+      # This query pulls in both attachments and photo gallery items
+      # Note that gallery items may not work right if filesystem storage is used;
+      # we have to make up a filename for gallery items.
+      uploads = mysql_query <<-SQL
+      SELECT n.parentid nodeid, a.filename, fd.userid, LENGTH(fd.filedata) AS dbsize, filedata, fd.filedataid
       FROM #{DB_PREFIX}attach a
       LEFT JOIN #{DB_PREFIX}filedata fd ON fd.filedataid = a.filedataid
       LEFT JOIN #{DB_PREFIX}node n on n.nodeid = a.nodeid
@@ -403,54 +407,56 @@ class ImportScripts::VBulletin < ImportScripts::Base
         FROM #{DB_PREFIX}photo p
         LEFT JOIN #{DB_PREFIX}filedata fdp on fdp.filedataid = p.filedataid
         LEFT JOIN #{DB_PREFIX}node np on np.nodeid = p.nodeid
-    SQL
+        LIMIT #{ATTACHMENT_BATCH_SIZE}
+        OFFSET #{offset}
+      SQL
 
-    current_count = 0
-    total_count = uploads.count
+      current_count = 0
 
-    uploads.each do |upload|
-      post_id = PostCustomField.where(name: 'import_id').where(value: upload['nodeid']).first&.post_id
-      post_id = PostCustomField.where(name: 'import_id').where(value: "thread-#{upload['nodeid']}").first&.post_id unless post_id
-      if post_id.nil?
-        puts "Post for #{upload['nodeid']} not found"
-        next
-      end
-      post = Post.find(post_id)
-
-      filename = File.join(ATTACH_DIR, upload['userid'].to_s.split('').join('/'), "#{upload['filedataid']}.attach")
-      real_filename = upload['filename']
-      real_filename.prepend SecureRandom.hex if real_filename[0] == '.'
-
-      unless File.exist?(filename)
-        # attachments can be on filesystem or in database
-        # try to retrieve from database if the file did not exist on filesystem
-        if upload['dbsize'].to_i == 0
-          puts "Attachment file #{upload['filedataid']} doesn't exist"
+      uploads.each do |upload|
+        post_id = PostCustomField.where(name: 'import_id').where(value: upload['nodeid']).first&.post_id
+        post_id = PostCustomField.where(name: 'import_id').where(value: "thread-#{upload['nodeid']}").first&.post_id unless post_id
+        if post_id.nil?
+          puts "Post for #{upload['nodeid']} not found"
           next
         end
+        post = Post.find(post_id)
 
-        tmpfile = 'attach_' + upload['filedataid'].to_s
-        filename = File.join('/tmp/', tmpfile)
-        File.open(filename, 'wb') { |f|
-          #f.write(PG::Connection.unescape_bytea(row['filedata']))
-          f.write(upload['filedata'])
-        }
-      end
+        filename = File.join(ATTACH_DIR, upload['userid'].to_s.split('').join('/'), "#{upload['filedataid']}.attach")
+        real_filename = upload['filename']
+        real_filename.prepend SecureRandom.hex if real_filename[0] == '.'
 
-      upl_obj = create_upload(post.user.id, filename, real_filename)
-      if upl_obj&.persisted?
-        html = html_for_upload(upl_obj, real_filename)
-        if !post.raw[html]
-          post.raw += "\n\n#{html}\n\n"
-          post.save!
-          PostUpload.create!(post: post, upload: upl_obj) unless PostUpload.where(post: post, upload: upl_obj).exists?
+        unless File.exist?(filename)
+          # attachments can be on filesystem or in database
+          # try to retrieve from database if the file did not exist on filesystem
+          if upload['dbsize'].to_i == 0
+            puts "Attachment file #{upload['filedataid']} doesn't exist"
+            next
+          end
+
+          tmpfile = 'attach_' + upload['filedataid'].to_s
+          filename = File.join('/tmp/', tmpfile)
+          File.open(filename, 'wb') { |f|
+            #f.write(PG::Connection.unescape_bytea(row['filedata']))
+            f.write(upload['filedata'])
+          }
         end
-      else
-        puts "Fail"
-        exit
+
+        upl_obj = create_upload(post.user.id, filename, real_filename)
+        if upl_obj&.persisted?
+          html = html_for_upload(upl_obj, real_filename)
+          if !post.raw[html]
+            post.raw += "\n\n#{html}\n\n"
+            post.save!
+            PostUpload.create!(post: post, upload: upl_obj) unless PostUpload.where(post: post, upload: upl_obj).exists?
+          end
+        else
+          puts "Fail"
+          exit
+        end
+        current_count += 1
+        print_status(current_count + (offset || 0), upload_count)
       end
-      current_count += 1
-      print_status(current_count, total_count)
     end
   end
 
